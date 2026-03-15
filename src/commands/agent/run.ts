@@ -1,5 +1,6 @@
 import { Command, Flags } from '@oclif/core'
 import { GoogleGenAI, Type, type FunctionDeclaration } from '@google/genai'
+import Anthropic from '@anthropic-ai/sdk'
 import { getBalance, deployContract, callContract, sbtcDeposit } from '../../lib/services.js'
 import { requireExec } from '../../lib/guards.js'
 import type { NetworkType } from '../../auth/wallet.js'
@@ -64,6 +65,61 @@ const tools: FunctionDeclaration[] = [
   },
 ]
 
+const claudeTools: Anthropic.Tool[] = [
+  {
+    name: 'stacks_get_balance',
+    description: 'Get the STX balance for a Stacks address',
+    input_schema: {
+      type: 'object',
+      properties: {
+        address: { type: 'string', description: 'Stacks address to query' },
+        network: { type: 'string', description: 'Network: testnet or mainnet' },
+      },
+      required: ['address'],
+    },
+  },
+  {
+    name: 'stacks_deploy_contract',
+    description: 'Deploy a Clarity smart contract to the Stacks blockchain',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contractCode: { type: 'string', description: 'Path to Clarity contract file' },
+        contractName: { type: 'string', description: 'Contract name' },
+        network: { type: 'string', description: 'Network: testnet or mainnet' },
+      },
+      required: ['contractCode', 'contractName'],
+    },
+  },
+  {
+    name: 'stacks_call_contract',
+    description: 'Call a public function on a Clarity smart contract',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contract: { type: 'string', description: 'Contract in "address.name" format' },
+        function: { type: 'string', description: 'Function name to call' },
+        args: { type: 'array', items: { type: 'string' }, description: 'Function arguments' },
+        network: { type: 'string', description: 'Network: testnet or mainnet' },
+      },
+      required: ['contract', 'function'],
+    },
+  },
+  {
+    name: 'stacks_sbtc_deposit',
+    description: 'Deposit BTC to receive sBTC on the Stacks blockchain',
+    input_schema: {
+      type: 'object',
+      properties: {
+        amount: { type: 'string', description: 'Amount in BTC (e.g. 0.001)' },
+        recipient: { type: 'string', description: 'Stacks address to receive sBTC' },
+        network: { type: 'string', description: 'Network: testnet or mainnet' },
+      },
+      required: ['amount'],
+    },
+  },
+]
+
 type ToolArgs = Record<string, unknown>
 
 async function dispatchTool(name: string, args: ToolArgs): Promise<string> {
@@ -114,6 +170,36 @@ async function dispatchTool(name: string, args: ToolArgs): Promise<string> {
   }
 }
 
+async function runWithClaude(prompt: string, network: string): Promise<string> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }]
+
+  while (true) {
+    const response = await client.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 1024,
+      tools: claudeTools,
+      messages,
+    })
+
+    messages.push({ role: 'assistant', content: response.content })
+
+    if (response.stop_reason !== 'tool_use') break
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = []
+    for (const block of response.content) {
+      if (block.type !== 'tool_use') continue
+      const result = await dispatchTool(block.name, block.input as ToolArgs)
+      toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result })
+    }
+    messages.push({ role: 'user', content: toolResults })
+  }
+
+  const last = messages.at(-1)!
+  const text = (last.content as Anthropic.ContentBlock[]).find(b => b.type === 'text')
+  return text && text.type === 'text' ? text.text : ''
+}
+
 export default class AgentRun extends Command {
   static description = 'Run an AI agent to interact with Stacks using natural language'
   static id = 'agent:run'
@@ -133,42 +219,55 @@ export default class AgentRun extends Command {
       options: ['testnet', 'mainnet'],
       default: 'testnet',
     }),
+    provider: Flags.string({
+      description: 'AI provider: gemini or claude (auto-detects from env if omitted)',
+      options: ['gemini', 'claude'],
+    }),
   }
 
   async run(): Promise<void> {
     const { flags } = await this.parse(AgentRun)
 
-    const apiKey = process.env.GEMINI_API_KEY
-    if (!apiKey) {
-      this.error('GEMINI_API_KEY environment variable is not set')
-    }
+    const provider = flags.provider ?? (process.env.ANTHROPIC_API_KEY ? 'claude' : 'gemini')
 
-    const ai = new GoogleGenAI({ apiKey })
     this.log(`Agent: Processing "${flags.prompt}"...`)
 
-    const chat = ai.chats.create({
-      model: 'gemini-2.0-flash',
-      config: { tools: [{ functionDeclarations: tools }] },
-    })
-
-    let response = await chat.sendMessage({ message: flags.prompt })
-
-    while (response.functionCalls && response.functionCalls.length > 0) {
-      const results = []
-      for (const call of response.functionCalls) {
-        this.log(`\nUsing tool: ${call.name}`)
-        const result = await dispatchTool(call.name!, call.args as ToolArgs)
-        this.log(`Result: ${result}`)
-        results.push({ id: call.id, name: call.name!, response: { output: result } })
+    if (provider === 'claude') {
+      if (!process.env.ANTHROPIC_API_KEY) this.error('ANTHROPIC_API_KEY is not set')
+      const result = await runWithClaude(flags.prompt, flags.network)
+      this.log(`\nAgent: ${result}`)
+    } else {
+      const apiKey = process.env.GEMINI_API_KEY
+      if (!apiKey) {
+        this.error('GEMINI_API_KEY environment variable is not set')
       }
 
-      response = await chat.sendMessage({
-        message: results.map(r => ({
-          functionResponse: { id: r.id, name: r.name, response: r.response },
-        })),
-      })
-    }
+      const ai = new GoogleGenAI({ apiKey })
 
-    this.log(`\nAgent: ${response.text}`)
+      const chat = ai.chats.create({
+        model: 'gemini-2.0-flash',
+        config: { tools: [{ functionDeclarations: tools }] },
+      })
+
+      let response = await chat.sendMessage({ message: flags.prompt })
+
+      while (response.functionCalls && response.functionCalls.length > 0) {
+        const results = []
+        for (const call of response.functionCalls) {
+          this.log(`\nUsing tool: ${call.name}`)
+          const result = await dispatchTool(call.name!, call.args as ToolArgs)
+          this.log(`Result: ${result}`)
+          results.push({ id: call.id, name: call.name!, response: { output: result } })
+        }
+
+        response = await chat.sendMessage({
+          message: results.map(r => ({
+            functionResponse: { id: r.id, name: r.name, response: r.response },
+          })),
+        })
+      }
+
+      this.log(`\nAgent: ${response.text}`)
+    }
   }
 }
