@@ -3,10 +3,17 @@ import {
   makeContractDeploy,
   makeContractCall,
   broadcastTransaction,
+  callReadOnlyFunction,
   uintCV,
+  principalCV,
   stringUtf8CV,
   ClarityValue,
   AnchorMode,
+  cvToValue,
+  PostConditionMode,
+  FungibleConditionCode,
+  makeStandardSTXPostCondition,
+  makeContractSTXPostCondition,
 } from '@stacks/transactions'
 import { StackingClient } from '@stacks/stacking'
 import { WalletManager, NetworkType } from '../auth/wallet.js'
@@ -42,6 +49,16 @@ export async function deployContract(
   const privateKey = wallet.getPrivateKey()
   const stacksNetwork = wallet.getNetwork()
   const codeBody = readFileSync(contractPath, 'utf-8')
+
+  const nonAsciiMatch = codeBody.match(/[^\x20-\x7E\t\n\r]/)
+  if (nonAsciiMatch) {
+    const line = codeBody.slice(0, codeBody.indexOf(nonAsciiMatch[0])).split('\n').length
+    throw new Error(
+      `Contract source contains a non-ASCII character on line ${line}: ` +
+      `U+${nonAsciiMatch[0].codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}. ` +
+      `Stacks contracts must use only printable ASCII characters.`
+    )
+  }
 
   const tx = await makeContractDeploy({
     contractName,
@@ -153,6 +170,106 @@ export async function sbtcWithdraw(
     throw new Error(`Broadcast failed: ${result.error} — ${(result as { reason?: string }).reason}`)
   }
   return result.txid
+}
+
+function getVaultContract(network: NetworkType): string {
+  if (process.env.VAULT_CONTRACT) return process.env.VAULT_CONTRACT
+  const wallet = new WalletManager(network)
+  return `${wallet.getAddress()}.sbtc-vault`
+}
+
+export async function vaultDeposit(amount: string, network: NetworkType = 'testnet'): Promise<string> {
+  checkRateLimit()
+  const wallet = new WalletManager(network)
+  const privateKey = wallet.getPrivateKey()
+  const stacksNetwork = wallet.getNetwork()
+  const satoshis = Math.round(parseFloat(amount) * 100_000_000)
+  const [contractAddress, contractName] = getVaultContract(network).split('.')
+  const senderAddress = wallet.getAddress()
+
+  const tx = await makeContractCall({
+    contractAddress,
+    contractName,
+    functionName: 'deposit',
+    functionArgs: [uintCV(BigInt(satoshis))],
+    senderKey: privateKey,
+    network: stacksNetwork,
+    anchorMode: AnchorMode.Any,
+    postConditionMode: PostConditionMode.Deny,
+    postConditions: [
+      makeStandardSTXPostCondition(senderAddress, FungibleConditionCode.Equal, BigInt(satoshis)),
+    ],
+  })
+
+  const result = await broadcastTransaction(tx, stacksNetwork)
+  if ('error' in result) {
+    throw new Error(`Broadcast failed: ${result.error} — ${(result as { reason?: string }).reason}`)
+  }
+  return result.txid
+}
+
+export async function vaultWithdraw(amount: string, network: NetworkType = 'testnet'): Promise<string> {
+  checkRateLimit()
+  const wallet = new WalletManager(network)
+  const privateKey = wallet.getPrivateKey()
+  const stacksNetwork = wallet.getNetwork()
+  const satoshis = Math.round(parseFloat(amount) * 100_000_000)
+  const [contractAddress, contractName] = getVaultContract(network).split('.')
+
+  const tx = await makeContractCall({
+    contractAddress,
+    contractName,
+    functionName: 'withdraw',
+    functionArgs: [uintCV(BigInt(satoshis))],
+    senderKey: privateKey,
+    network: stacksNetwork,
+    anchorMode: AnchorMode.Any,
+    postConditionMode: PostConditionMode.Deny,
+    postConditions: [
+      makeContractSTXPostCondition(contractAddress, contractName, FungibleConditionCode.Equal, BigInt(satoshis)),
+    ],
+  })
+
+  const result = await broadcastTransaction(tx, stacksNetwork)
+  if ('error' in result) {
+    throw new Error(`Broadcast failed: ${result.error} — ${(result as { reason?: string }).reason}`)
+  }
+  return result.txid
+}
+
+export async function vaultInfo(
+  addressOverride: string | undefined,
+  network: NetworkType = 'testnet'
+): Promise<{ balance: string; totalValue: string }> {
+  const wallet = new WalletManager(network)
+  const address = addressOverride ?? wallet.getAddress()
+  const stacksNetwork = wallet.getNetwork()
+  const [contractAddress, contractName] = getVaultContract(network).split('.')
+
+  const balanceResult = await callReadOnlyFunction({
+    contractAddress,
+    contractName,
+    functionName: 'get-balance',
+    functionArgs: [principalCV(address)],
+    network: stacksNetwork,
+    senderAddress: address,
+  })
+
+  const totalResult = await callReadOnlyFunction({
+    contractAddress,
+    contractName,
+    functionName: 'get-total-value',
+    functionArgs: [],
+    network: stacksNetwork,
+    senderAddress: address,
+  })
+
+  const balanceSats = BigInt(cvToValue(balanceResult, true) as string | number)
+  const totalSats = BigInt(cvToValue(totalResult, true) as string | number)
+  const balance = (Number(balanceSats) / 100_000_000).toFixed(8)
+  const totalValue = (Number(totalSats) / 100_000_000).toFixed(8)
+
+  return { balance, totalValue }
 }
 
 export async function stackStx(

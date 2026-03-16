@@ -5,7 +5,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
-import { getBalance, deployContract, callContract, sbtcDeposit } from '../lib/services.js'
+import { getBalance, deployContract, callContract, sbtcDeposit, vaultDeposit, vaultWithdraw, vaultInfo } from '../lib/services.js'
 import { requireExec } from '../lib/guards.js'
 import type { NetworkType } from '../auth/wallet.js'
 import 'dotenv/config'
@@ -31,6 +31,21 @@ const CallContractInput = z.object({
 const SbtcDepositInput = z.object({
   amount: z.string().describe('Amount in BTC (e.g. 0.001)'),
   recipient: z.string().optional().describe('Stacks address to receive sBTC'),
+  network: z.enum(['testnet', 'mainnet']).default('testnet'),
+})
+
+const VaultDepositInput = z.object({
+  amount: z.string().describe('Amount of sBTC to deposit (e.g. 0.001)'),
+  network: z.enum(['testnet', 'mainnet']).default('testnet'),
+})
+
+const VaultWithdrawInput = z.object({
+  amount: z.string().describe('Amount of sBTC to withdraw (e.g. 0.001)'),
+  network: z.enum(['testnet', 'mainnet']).default('testnet'),
+})
+
+const VaultInfoInput = z.object({
+  address: z.string().optional().describe('Stacks address to query'),
   network: z.enum(['testnet', 'mainnet']).default('testnet'),
 })
 
@@ -93,6 +108,42 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['amount'],
       },
     },
+    {
+      name: 'stacks_vault_deposit',
+      description: 'Deposit sBTC into the sBTC vault',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          amount: { type: 'string', description: 'Amount of sBTC to deposit (e.g. 0.001)' },
+          network: { type: 'string', enum: ['testnet', 'mainnet'] },
+        },
+        required: ['amount'],
+      },
+    },
+    {
+      name: 'stacks_vault_withdraw',
+      description: 'Withdraw sBTC from the sBTC vault',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          amount: { type: 'string', description: 'Amount of sBTC to withdraw (e.g. 0.001)' },
+          network: { type: 'string', enum: ['testnet', 'mainnet'] },
+        },
+        required: ['amount'],
+      },
+    },
+    {
+      name: 'stacks_vault_info',
+      description: 'Get vault balance and total value locked for an address',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          address: { type: 'string', description: 'Stacks address to query (optional)' },
+          network: { type: 'string', enum: ['testnet', 'mainnet'] },
+        },
+        required: [],
+      },
+    },
   ],
 }))
 
@@ -140,6 +191,32 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         const txid = await sbtcDeposit(input.amount, input.recipient, input.network as NetworkType)
         return {
           content: [{ type: 'text', text: JSON.stringify({ txid, amount: input.amount }) }],
+        }
+      }
+
+      case 'stacks_vault_deposit': {
+        const input = VaultDepositInput.parse(args)
+        requireExec('vault')
+        const txid = await vaultDeposit(input.amount, input.network as NetworkType)
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ txid, amount: input.amount }) }],
+        }
+      }
+
+      case 'stacks_vault_withdraw': {
+        const input = VaultWithdrawInput.parse(args)
+        requireExec('vault')
+        const txid = await vaultWithdraw(input.amount, input.network as NetworkType)
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ txid, amount: input.amount }) }],
+        }
+      }
+
+      case 'stacks_vault_info': {
+        const input = VaultInfoInput.parse(args)
+        const result = await vaultInfo(input.address, input.network as NetworkType)
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
         }
       }
 

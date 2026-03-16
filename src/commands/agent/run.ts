@@ -1,7 +1,7 @@
 import { Command, Flags } from '@oclif/core'
 import { GoogleGenAI, Type, type FunctionDeclaration } from '@google/genai'
 import Anthropic from '@anthropic-ai/sdk'
-import { getBalance, deployContract, callContract, sbtcDeposit } from '../../lib/services.js'
+import { getBalance, deployContract, callContract, sbtcDeposit, vaultDeposit, vaultWithdraw, vaultInfo } from '../../lib/services.js'
 import { requireExec } from '../../lib/guards.js'
 import type { NetworkType } from '../../auth/wallet.js'
 import 'dotenv/config'
@@ -63,6 +63,42 @@ const tools: FunctionDeclaration[] = [
       required: ['amount'],
     },
   },
+  {
+    name: 'stacks_vault_deposit',
+    description: 'Deposit sBTC into the sBTC vault',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        amount: { type: Type.STRING, description: 'Amount of sBTC to deposit (e.g. 0.001)' },
+        network: { type: Type.STRING, description: 'Network: testnet or mainnet' },
+      },
+      required: ['amount'],
+    },
+  },
+  {
+    name: 'stacks_vault_withdraw',
+    description: 'Withdraw sBTC from the sBTC vault',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        amount: { type: Type.STRING, description: 'Amount of sBTC to withdraw (e.g. 0.001)' },
+        network: { type: Type.STRING, description: 'Network: testnet or mainnet' },
+      },
+      required: ['amount'],
+    },
+  },
+  {
+    name: 'stacks_vault_info',
+    description: 'Get vault balance and total value locked for an address',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        address: { type: Type.STRING, description: 'Stacks address to query (optional)' },
+        network: { type: Type.STRING, description: 'Network: testnet or mainnet' },
+      },
+      required: [],
+    },
+  },
 ]
 
 const claudeTools: Anthropic.Tool[] = [
@@ -118,6 +154,42 @@ const claudeTools: Anthropic.Tool[] = [
       required: ['amount'],
     },
   },
+  {
+    name: 'stacks_vault_deposit',
+    description: 'Deposit sBTC into the sBTC vault',
+    input_schema: {
+      type: 'object',
+      properties: {
+        amount: { type: 'string', description: 'Amount of sBTC to deposit (e.g. 0.001)' },
+        network: { type: 'string', description: 'Network: testnet or mainnet' },
+      },
+      required: ['amount'],
+    },
+  },
+  {
+    name: 'stacks_vault_withdraw',
+    description: 'Withdraw sBTC from the sBTC vault',
+    input_schema: {
+      type: 'object',
+      properties: {
+        amount: { type: 'string', description: 'Amount of sBTC to withdraw (e.g. 0.001)' },
+        network: { type: 'string', description: 'Network: testnet or mainnet' },
+      },
+      required: ['amount'],
+    },
+  },
+  {
+    name: 'stacks_vault_info',
+    description: 'Get vault balance and total value locked for an address',
+    input_schema: {
+      type: 'object',
+      properties: {
+        address: { type: 'string', description: 'Stacks address to query (optional)' },
+        network: { type: 'string', description: 'Network: testnet or mainnet' },
+      },
+      required: [],
+    },
+  },
 ]
 
 type ToolArgs = Record<string, unknown>
@@ -161,6 +233,27 @@ async function dispatchTool(name: string, args: ToolArgs): Promise<string> {
           (args.network as NetworkType) ?? 'testnet'
         )
         return JSON.stringify({ txid })
+      }
+      case 'stacks_vault_deposit': {
+        requireExec('vault')
+        const txid = await vaultDeposit(
+          args.amount as string,
+          (args.network as NetworkType) ?? 'testnet'
+        )
+        return JSON.stringify({ txid })
+      }
+      case 'stacks_vault_withdraw': {
+        requireExec('vault')
+        const txid = await vaultWithdraw(
+          args.amount as string,
+          (args.network as NetworkType) ?? 'testnet'
+        )
+        return JSON.stringify({ txid })
+      }
+      case 'stacks_vault_info': {
+        const network = (args.network as NetworkType) ?? 'testnet'
+        const result = await vaultInfo(args.address as string, network)
+        return JSON.stringify(result)
       }
       default:
         return `Unknown tool: ${name}`
