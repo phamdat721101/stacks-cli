@@ -237,6 +237,21 @@ export async function vaultWithdraw(amount: string, network: NetworkType = 'test
   return result.txid
 }
 
+/**
+ * Safely extract a BigInt from a cvToValue result.
+ * cvToValue may return a plain string/number OR a Clarity response object
+ * like { type: 'ok', value: '0' }. This helper unwraps it.
+ */
+function extractBigInt(cv: unknown): bigint {
+  if (typeof cv === 'bigint') return cv
+  if (typeof cv === 'number' || typeof cv === 'string') return BigInt(cv)
+  if (cv !== null && typeof cv === 'object') {
+    const obj = cv as Record<string, unknown>
+    if ('value' in obj) return extractBigInt(obj.value)
+  }
+  return 0n
+}
+
 export async function vaultInfo(
   addressOverride: string | undefined,
   network: NetworkType = 'testnet'
@@ -264,8 +279,8 @@ export async function vaultInfo(
     senderAddress: address,
   })
 
-  const balanceSats = BigInt(cvToValue(balanceResult, true) as string | number)
-  const totalSats = BigInt(cvToValue(totalResult, true) as string | number)
+  const balanceSats = extractBigInt(cvToValue(balanceResult, true))
+  const totalSats = extractBigInt(cvToValue(totalResult, true))
   const balance = (Number(balanceSats) / 100_000_000).toFixed(8)
   const totalValue = (Number(totalSats) / 100_000_000).toFixed(8)
 
