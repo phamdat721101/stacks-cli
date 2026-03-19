@@ -15,6 +15,8 @@ A MCP-native CLI for the Stacks blockchain — interact with Stacks via terminal
 - sBTC deposit and withdrawal
 - **sBTC vault** — deposit and withdraw sBTC through a Clarity vault contract
 - **Dual AI agent** — supports both Google Gemini 2.0 Flash and Anthropic Claude (auto-detected from env)
+- **AutoResearch** — autonomous research loop that monitors on-chain state, analyzes with Claude, and logs findings
+- **Cron scheduler** — schedule any CLI command to run on a recurring interval
 - **MCP server** — exposes all tools to Claude Desktop and other MCP clients
 
 ---
@@ -283,6 +285,99 @@ stacks agent:run --prompt "How much sBTC is in the vault?"
 ```
 
 The agent has access to all CLI tools including the vault tools (`stacks_vault_deposit`, `stacks_vault_withdraw`, `stacks_vault_info`).
+
+---
+
+### `stacks research:run`
+
+Run an autonomous research loop that monitors Stacks blockchain state, analyzes changes with Claude, and logs results to a TSV file.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--address` | yes | Stacks address to monitor |
+| `--strategy` | no | Path to strategy markdown file (uses built-in default if omitted) |
+| `--iterations` | no | Number of research iterations (default: 5) |
+| `--interval` | no | Seconds between iterations (default: 10) |
+| `--log` | no | Path to TSV log file (default: `research-log.tsv`) |
+| `-n, --network` | no | `testnet` (default) or `mainnet` |
+
+```bash
+# Basic research loop — 5 iterations, 10s apart
+stacks research:run --address ST1PY8K93CXJ4925VE7EGF2NVP1H2ZHEK4R6Y0DD3
+
+# Custom strategy and longer run
+stacks research:run --address ST1PY8... --strategy ./my-strategy.md --iterations 20 --interval 60
+```
+
+Each iteration gathers on-chain state (STX balance, vault TVL), sends it to Claude for analysis, and appends the result to the log file.
+
+---
+
+### `stacks cron:add`
+
+Schedule a stacks command to run on a recurring interval.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--name` | yes | Unique name for this cron job |
+| `--command` | yes | stacks command to run (e.g. `vault:info`) |
+| `--interval` | yes | Interval between runs (e.g. `30s`, `5m`, `1h`) |
+
+```bash
+stacks cron:add --name hourly-research \
+  --command "research:run --address ST1PY8... --iterations 3 --interval 10" \
+  --interval 1h
+```
+
+---
+
+### `stacks cron:list`
+
+List all scheduled cron jobs.
+
+```bash
+stacks cron:list
+```
+
+---
+
+### `stacks cron:run`
+
+Start the cron daemon to execute scheduled jobs. Runs in the foreground.
+
+```bash
+stacks cron:run
+```
+
+---
+
+## AutoResearch
+
+Combine `research:run` with `cron:add` for fully autonomous blockchain monitoring.
+
+### Step 1 — Run research manually
+
+```bash
+stacks research:run --address ST1PY8K93CXJ4925VE7EGF2NVP1H2ZHEK4R6Y0DD3 --iterations 3 --interval 10
+```
+
+The AI gathers STX balance + vault TVL, analyzes it, and logs results to `research-log.tsv`.
+
+### Step 2 — Schedule with cron
+
+```bash
+stacks cron:add --name hourly-research \
+  --command "research:run --address ST1PY8... --iterations 5 --interval 10" \
+  --interval 1h
+```
+
+### Step 3 — Start the daemon
+
+```bash
+stacks cron:run
+```
+
+The daemon executes all scheduled jobs on their defined intervals. Press `Ctrl+C` to stop.
 
 ---
 
